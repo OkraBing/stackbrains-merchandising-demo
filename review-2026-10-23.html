@@ -3531,6 +3531,111 @@ const mountBeforeMode23=mountInlineOrder14,saveBeforeMode23=saveInlineOrder14;
 mountInlineOrder14=function(){const result=mountBeforeMode23(),d=inlineOrder14;if(d?.key==='mode'&&order(d.order)?.data.shipments?.length){const row=inlineOrderRow14();if(row&&!row.querySelector('.mode-note23')){const note=document.createElement('small');note.className='mode-note23 sub';note.textContent='同时更新该订单各出货批次的运输方式';row.cells[1].append(note)}}return result};
 saveInlineOrder14=function(){const d=inlineOrder14;if(d?.key!=='mode'||!order(d.order)?.data.shipments?.length)return saveBeforeMode23();if(!inlineOrderDirty14())return;d.value=inlineOrderValue14();try{const o=requireOrder30(d.order,true);if(o.internal!==d.internal||o.version!==d.version||S.actor!==d.actor)throw Error('账号或订单已更新，请取消后重新编辑');const data=clone(o.data);data.mode=d.value;data.shipments=data.shipments.map(b=>({...b,mode:d.value}));const result=transaction30(()=>commitOrderFields14({...d,data}));inlineOrder14=null;refreshInlineOrder14(result.order);toast('运输方式已保存')}catch(e){inlineOrder14=d;if(!document.getElementById(d.inputId))mountInlineOrder14();inlineField43(d.inputId,e.message,true);syncInlineOrder14()}};
 
+// Settings writes share the same durable transaction and stale-form protections.
+let bulkForm23=null,roleForm23=null;
+bulkMembers=function(){safe(()=>{
+ requirePerm('成员管理');assertFreshWorkspace();
+ const members=S.members.filter(m=>m.role!=='admin'&&!m.removed);
+ bulkForm23={actor:S.actor,ids:members.map(m=>m.id),stamp:JSON.stringify(S.members)};
+ modal('批量授予品牌与角色',`<h4>选择成员</h4><div class="space"></div><div class="stack">${members.map((m,i)=>check('bulk-'+i,m.name,false)).join('')}</div><div class="space"></div><div class="formgrid">${label('授予角色',sel('bulkRole',S.roles.filter(r=>r.id!=='admin').map(r=>[r.id,r.name]),'viewer'))}${label('授予品牌',sel('bulkBrand',S.brands.map(b=>b.name),'Zara'))}</div><p class="sub">保留其他品牌授权与已有订单范围。</p>`,btn('应用授权','saveBulkMembers23()','primary'));
+})};
+function saveBulkMembers23(){safe(()=>{
+ requirePerm('成员管理');assertFreshWorkspace();const form=bulkForm23;
+ if(!form||form.actor!==S.actor||form.stamp!==JSON.stringify(S.members))throw Error('账号或成员资料已变化，请重新打开批量授权');
+ const role=val('bulkRole'),brand=val('bulkBrand');
+ if(!S.roles.some(r=>r.id===role&&r.id!=='admin'))throw Error('请选择有效角色');
+ if(!S.brands.some(b=>b.name===brand))throw Error('请选择有效品牌');
+ const ids=form.ids.filter((id,i)=>ck('bulk-'+i));if(!ids.length)throw Error('请至少选择一位成员');
+ transaction30(()=>{for(const id of ids){const member=S.members.find(m=>m.id===id);member.role=role;if(!member.brands.includes(brand))member.brands.push(brand)}log(null,'批量更新 '+ids.length+' 位成员授权')});
+ bulkForm23=null;closeModal(true);render();toast('成员授权已更新');
+})}
+const roleEditBefore23=roleEdit;
+roleEdit=function(id=''){return safe(()=>{
+ requirePerm('角色管理');assertFreshWorkspace();const role=S.roles.find(r=>r.id===id);
+ if(id&&!role)throw Error('角色已移除，请刷新后重试');
+ roleForm23={actor:S.actor,id,stamp:JSON.stringify(role)};return roleEditBefore23(id);
+})};
+saveRole=function(id=''){safe(()=>{
+ requirePerm('角色管理');assertFreshWorkspace();const role=S.roles.find(r=>r.id===id),form=roleForm23;
+ if(!form||form.actor!==S.actor||form.id!==id||form.stamp!==JSON.stringify(role))throw Error('账号或角色资料已变化，请重新打开');
+ if(role?.builtin)throw Error('内置角色不可修改');
+ const name=val('roleName'),permissions=PERMS.filter((p,i)=>ck('perm-'+i));
+ if(!name||chars42(name).length>80)return inlineField43('roleName','请输入 1–80 个字符的角色名称');
+ if(S.roles.some(r=>r.id!==id&&r.name.toLowerCase()===name.toLowerCase()))return inlineField43('roleName','角色名称已存在');
+ transaction30(()=>{if(role)Object.assign(role,{name,permissions});else S.roles.push({id:uid('role'),name,permissions});log(null,'保存角色 '+name)});
+ roleForm23=null;closeModal(true);render();toast('角色已保存');
+})};
+deleteRole=function(id){safe(()=>{
+ requirePerm('角色管理');assertFreshWorkspace();const role=S.roles.find(r=>r.id===id),account=S.actor,stamp=JSON.stringify(role);
+ if(!role)throw Error('角色已移除');if(role.builtin)throw Error('内置角色不可删除');
+ if(S.members.some(m=>m.role===id))throw Error('此角色仍绑定成员，请先迁移成员');
+ confirmAction('删除角色','未绑定成员的自定义角色将被删除，历史审计保留。',()=>{
+  requirePerm('角色管理');assertFreshWorkspace();
+  if(S.actor!==account||JSON.stringify(S.roles.find(r=>r.id===id))!==stamp)throw Error('账号或角色资料已变化，请重新操作');
+  if(S.members.some(m=>m.role===id))throw Error('此角色已绑定成员，请先迁移成员');
+  transaction30(()=>{S.roles=S.roles.filter(r=>r.id!==id);log(null,'删除角色 '+role.name)});
+ });
+})};
+toggleMember=function(id){safe(()=>{
+ assertFreshWorkspace();requirePerm('成员管理');const m=S.members.find(m=>m.id===id&&!m.removed);
+ if(!m)throw Error('成员不存在');if(m.id===S.actor||lastAdmin(m))throw Error('不能停用当前成员或最后一位管理员');
+ if(m.status==='pending'){toast('邀请记录已保留，当前未连接邮件服务');return}
+ transaction30(()=>{m.status=m.status==='active'?'disabled':'active';log(null,'成员状态更新 '+m.name)});render();
+})};
+toggleMailbox=function(id){safe(()=>{
+ assertFreshWorkspace();requireMailboxManager(id);const m=S.connections.find(m=>m.id===id);
+ if(!m)throw Error('邮箱已移除');const account=S.actor,stamp=JSON.stringify(m);
+ const run=()=>{assertFreshWorkspace();requireMailboxManager(id);const current=S.connections.find(m=>m.id===id);
+  if(S.actor!==account||JSON.stringify(current)!==stamp)throw Error('配置已变化，请重新操作');
+  transaction30(()=>{current.status=current.status==='active'?'paused':'active';log(null,'邮箱 '+current.address+'：'+current.status)});
+ };
+ if(m.status==='active')confirmAction('关闭邮箱',`停止此邮箱后续收发；已保存邮件仍可查看。${boundBrands(id).length?'以下品牌将无法发件：'+boundBrands(id).join('、')+'。':''}`,run,'关闭邮箱');
+ else{run();render()}
+})};
+removeMailbox=function(id){safe(()=>{
+ requireMailboxManager(id);assertFreshWorkspace();const m=S.connections.find(m=>m.id===id),account=S.actor,stamp=JSON.stringify(m);
+ if(!m)throw Error('邮箱已移除');if(boundBrands(id).length)throw Error('请先更换以下品牌的发件邮箱：'+boundBrands(id).join('、'));
+ confirmAction('移除邮箱',`移除 ${m.address} 的连接配置，保留已保存邮件和业务资料。`,()=>{
+  assertFreshWorkspace();requireMailboxManager(id);
+  if(S.actor!==account||JSON.stringify(S.connections.find(m=>m.id===id))!==stamp||boundBrands(id).length)throw Error('配置已变化，请重新检查');
+  transaction30(()=>{S.connections=S.connections.filter(m=>m.id!==id);log(null,'移除邮箱 '+m.address)});
+ },'移除邮箱');
+})};
+const editBrandSenderBefore23=editBrandSender;
+editBrandSender=function(brand){const previous=window.saveBrandSenderBinding,result=editBrandSenderBefore23(brand),save=window.saveBrandSenderBinding;
+ if(save!==previous&&document.getElementById('brandSender')){
+  const account=S.actor,binding=S.brandSenders[brand],stamp=JSON.stringify(S.brands.find(b=>b.name===brand));
+  window.saveBrandSenderBinding=()=>safe(()=>{
+   assertFreshWorkspace();requireBrandMailManager(brand);
+   if(S.actor!==account||S.brandSenders[brand]!==binding||JSON.stringify(S.brands.find(b=>b.name===brand))!==stamp)throw Error('配置已变化，请重新打开');
+   const id=val('brandSender');if(id&&!brandSenderCandidates().some(m=>m.id===id&&m.status==='active'&&(can('邮件设置管理')||authorizedSender(m))))throw Error('请选择启用的发件邮箱');
+   transaction30(()=>{if(id)S.brandSenders[brand]=id;else delete S.brandSenders[brand];log(null,'更新品牌发件邮箱：'+brand)});
+   closeModal(true);render();toast('品牌发件邮箱已更新');
+  });
+ }
+ return result;
+};
+const renderBeforeSettings23=render;
+render=function(...args){const result=renderBeforeSettings23(...args),input=document.getElementById('syncFrequency');
+ if(input){input.dataset.actor23=S.actor;input.dataset.policy23=JSON.stringify(S.mailAutomationByActor?.[S.actor]??null)}
+ return result;
+};
+saveRoutingPolicy=function(){safe(()=>{
+ assertFreshWorkspace();requirePerm('邮件查看与同步');const input=document.getElementById('syncFrequency'),frequency=val('syncFrequency');
+ if(!input||input.dataset.actor23!==S.actor||input.dataset.policy23!==JSON.stringify(S.mailAutomationByActor?.[S.actor]??null))throw Error('账号或同步策略已变化，请刷新后重试');
+ if(!['5','15','30','manual'].includes(frequency))return inlineField43('syncFrequency','请选择有效的同步频率');
+ transaction30(()=>{(S.mailAutomationByActor??={})[S.actor]={frequency,associate:ck('autoAssociate'),extract:ck('autoExtract'),draft:false};log(null,'更新邮件同步策略')});
+ input.dataset.policy23=JSON.stringify(S.mailAutomationByActor[S.actor]);rememberPageForm();toast('策略已保存');
+})};
+saveProfile=function(){safe(()=>{
+ const name=val('profileName'),email=val('profileEmail');
+ if(!name)return inlineField43('profileName','请输入姓名');
+ if(!singleEmail23(email))return inlineField43('profileEmail','请输入一个有效的邮箱地址');
+ if(S.members.some(m=>m.id!==S.actor&&!m.removed&&m.email?.toLowerCase()===email.toLowerCase()))return inlineField43('profileEmail','该邮箱已被其他成员使用');
+ const values={name,email,department:val('profileDept'),title:val('profileTitle'),phone:val('profilePhone')};
+ if(profileCommit14(['profileName','profileEmail','profileDept','profileTitle','profilePhone'],()=>Object.assign(actor(),values)))toast('个人资料已保存');
+})};
+
 const renderBeforeScroll23=render;
 const scrollOwners23='.page-scroll38,.mail-list,.mail-reading-content,.sheet-scroll14,.review-body-scroll14,.review-source-scroll14,.review-rows43,.settings-content34,.members-body43,.trace-list14,.trace-preview14,.history-view14';
 let renderedView23=null;
