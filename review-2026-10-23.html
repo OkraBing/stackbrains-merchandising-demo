@@ -3179,9 +3179,9 @@ uploadOrderFile=function(){safe(()=>{let o=requireOrder30(V.order,true);requireP
 function closeOrderUpload14(){orderUploadDraft14=null;closeModal(true)}
 function pickOrderUpload14(folder=false){let input=document.createElement('input');input.type='file';input.multiple=true;if(folder)input.setAttribute('webkitdirectory','');input.onchange=()=>receiveOrderFiles14([...input.files]);input.click()}
 async function receiveOrderFiles14(files){let draft=orderUploadDraft14;if(!draft||draft.busy)return;files=files.filter(f=>f.name!=='.DS_Store'&&!f.webkitRelativePath?.includes('/__MACOSX/'));if(!files.length)return;draft.error='';let o=order(draft.order),bytes=o.files.reduce((n,f)=>n+(Number(f.size)||0),0)+files.reduce((n,f)=>n+f.size,0);if(bytes>3*1024*1024){draft.error='此订单的原件合计不能超过 3 MB，请减少文件后重试。';renderOrderUpload14();return}draft.busy=true;renderOrderUpload14();try{let additions=[];for(let file of files){let data=await readCreateFile14(file),text='';if(/\.(txt|csv|md|json)$/i.test(file.name)){let raw=atob(String(data).split(',')[1]);text=new TextDecoder().decode(Uint8Array.from(raw,c=>c.charCodeAt(0)))}additions.push({id:uid('F'),name:file.name,path:file.webkitRelativePath||file.name,mime:file.type||'application/octet-stream',size:file.size,data:String(data).replace(/^data:;/,'data:application/octet-stream;'),...(text?{text}:{}),source:'manual-upload',time:now(),status:'待核对',orderId:draft.order})}
- if(orderUploadDraft14!==draft||draft.actor!==S.actor||!document.querySelector('.order-upload14'))return;
- transaction30(()=>{let current=requireOrder30(draft.order,true);requirePerm('文件上传',current.id);if(current.internal!==draft.internal)throw Error('订单已变化，请重新打开上传');current.files.push(...additions);log(null,'上传 '+additions.length+' 份原件至 '+current.id)});draft.files.push(...additions.map(f=>f.id));draft.selected=draft.files.length-additions.length;draft.version=order(draft.order).version;draft.checks={};draft.busy=false;render();renderOrderUpload14();
- }catch(error){if(orderUploadDraft14===draft){draft.busy=false;draft.error=error.message||'文件读取失败，请重试。';renderOrderUpload14()}}}
+ if(orderUploadDraft14!==draft||draft.actor!==S.actor||!document.querySelector('#modal:not(.hidden) .order-upload14'))return;
+ transaction30(()=>{let current=requireOrder30(draft.order,true);requirePerm('文件上传',current.id);if(current.internal!==draft.internal)throw Error('订单已变化，请重新打开上传');if(current.files.reduce((n,f)=>n+(Number(f.size)||0),0)+additions.reduce((n,f)=>n+f.size,0)>3*1024*1024)throw Error('此订单的原件合计不能超过 3 MB，请减少文件后重试。');current.files.push(...additions);log(null,'上传 '+additions.length+' 份原件至 '+current.id)});draft.files.push(...additions.map(f=>f.id));draft.selected=draft.files.length-additions.length;draft.version=order(draft.order).version;draft.checks={};draft.busy=false;render();if(draft.stage16!=='parsing')renderOrderUpload14();
+ }catch(error){if(orderUploadDraft14===draft&&draft.actor===S.actor&&document.querySelector('#modal:not(.hidden) .order-upload14')){draft.busy=false;draft.error=error.message||'文件读取失败，请重试。';if(draft.stage16!=='parsing')renderOrderUpload14()}}finally{draft.busy=false;if(orderUploadDraft14===draft&&(draft.actor!==S.actor||!document.querySelector('#modal:not(.hidden) .order-upload14'))){orderUploadDraft14=null;if(document.querySelector('#modal:not(.hidden) .order-upload14'))closeModal(true)}}}
 function orderFileCandidates14(file,o){if(!file?.text)return{rows:[],note:'原件已保存。此格式暂不支持自动识别，可下载查看后手动填写订单。'};let values=createCandidates14(file);if(/\.json$/i.test(file.name)){try{let data=JSON.parse(file.text);if(data&&typeof data==='object'&&!Array.isArray(data)){data=data.data||data;for(let key of Object.keys(fieldsLabels))if(Object.hasOwn(data,key)&&data[key]!==null&&data[key]!=='')values[key]=clone(data[key])}}catch{}}
  let references=[...file.text.matchAll(/(?:\bPO|订单编号)[ \t]*[:：=][ \t]*([^\n\r,;]+)/gi)].map(m=>m[1].trim());if(references.some(po=>![o.id,...o.aliases||[]].some(id=>id.toLowerCase()===po.toLowerCase())))return{rows:[],note:'文件中的订单编号与当前订单不一致。原件已保存，请先核对文件归属。'};
  if(values.brand&&o.brand&&values.brand.toLowerCase()!==o.brand.toLowerCase())return{rows:[],note:'文件中的品牌与当前订单不一致。原件已保存，请先核对文件归属。'};
@@ -3635,6 +3635,37 @@ saveProfile=function(){safe(()=>{
  const values={name,email,department:val('profileDept'),title:val('profileTitle'),phone:val('profilePhone')};
  if(profileCommit14(['profileName','profileEmail','profileDept','profileTitle','profilePhone'],()=>Object.assign(actor(),values)))toast('个人资料已保存');
 })};
+
+// A pending proposal may only write fields while its recorded attachment still
+// belongs to this order. Rejection remains available for obsolete proposals.
+const writeAttachmentBefore23=writeAttachmentLink21;
+writeAttachmentLink21=function(id,key,po,owner=S.actor){
+ const m=requireMail(id,'待归属处理');
+ if(m.folder==='outbox')throw Error('待发送邮件只支持查看关联');
+ return writeAttachmentBefore23(id,key,po,owner);
+};
+function staleReviewSources23(c){
+ if(!c?.sourceAttachments21?.length)return [];
+ const m=source30(c);
+ return c.sourceAttachments21.filter(ref=>{
+  if(!m)return true;
+  const index=m.attachments?.findIndex((a,i)=>attachmentKey21(m,i)===ref.key);
+  return index==null||index<0||attachmentPO21(m,m.attachments[index])!==c.order;
+ });
+}
+function showReviewSourceError23(c,refs){
+ let target=document.querySelector('.review-source-scroll14')||document.querySelector('#content .v30-review')||document.getElementById('content');
+ let note=document.getElementById('reviewSourceError23');if(!note){note=document.createElement('div');note.id='reviewSourceError23';note.className='error-inline';note.setAttribute('role','alert');note.tabIndex=-1;target.prepend(note)}
+ note.innerHTML=`<p>附件 ${refs.map(ref=>E(ref.name||'原始附件')).join('、')} 已取消关联或改绑。请先核对关联，再采用此建议；也可以保留订单原值。</p>${source30(c)&&mailAllowed(source30(c))?btn('核对关联附件',`openSourceMail30(${J(c.mail)})`,'link small'):''}`;
+ note.focus({preventScroll:true});note.scrollIntoView({block:'nearest',inline:'nearest'});
+}
+const commitReviewBeforeSources23=commitReview30;
+commitReview30=function(...args){
+ const c=review30(V.case);if(c)requireOrder30(c.order,true);
+ const accepting=c&&pending30(c).some(item=>reviewChoices[item.key]==='accept'),stale=accepting?staleReviewSources23(c):[];
+ if(stale.length){showReviewSourceError23(c,stale);return false}
+ document.getElementById('reviewSourceError23')?.remove();return commitReviewBeforeSources23(...args);
+};
 
 const renderBeforeScroll23=render;
 const scrollOwners23='.page-scroll38,.mail-list,.mail-reading-content,.sheet-scroll14,.review-body-scroll14,.review-source-scroll14,.review-rows43,.settings-content34,.members-body43,.trace-list14,.trace-preview14,.history-view14';
